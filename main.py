@@ -49,6 +49,26 @@ def _do_download(task_id: str, url: str, job_id: str, quality: str = "720p", r2_
     try:
         out_template = str(tmp / "original.%(ext)s")
 
+        # Metadata (title/duration/thumbnail) up front — cheap compared to the
+        # actual download, and lets /status expose the thumbnail immediately
+        # while the video is still downloading instead of only once it's done.
+        title, duration, thumbnail = "video", 0.0, None
+        try:
+            r = subprocess.run(
+                [YTDLP_BIN, "--dump-json", "--no-playlist", url],
+                capture_output=True, text=True, timeout=30,
+            )
+            import json as _json
+            meta = _json.loads(r.stdout.strip())
+            title = meta.get("title", "video")
+            duration = float(meta.get("duration") or 0)
+            thumbnail = meta.get("thumbnail")
+        except Exception:
+            pass
+
+        if thumbnail:
+            _jobs[task_id] = {**_jobs[task_id], "thumbnail": thumbnail}
+
         if quality == "1080p":
             formats = [
                 ("bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best", "1080p"),
@@ -99,20 +119,6 @@ def _do_download(task_id: str, url: str, job_id: str, quality: str = "720p", r2_
         except Exception:
             pass
 
-        # Get duration/title via yt-dlp --dump-json
-        title, duration = "video", 0.0
-        try:
-            r = subprocess.run(
-                [YTDLP_BIN, "--dump-json", "--no-playlist", url],
-                capture_output=True, text=True, timeout=30,
-            )
-            import json as _json
-            meta = _json.loads(r.stdout.strip())
-            title = meta.get("title", "video")
-            duration = float(meta.get("duration") or 0)
-        except Exception:
-            pass
-
         r2_key = r2_key_override if r2_key_override else f"jobs/{job_id}/original.mp4"
         print(f"[dl_service] uploading {video_file.stat().st_size // 1024 // 1024}MB → R2 {r2_key}", flush=True)
         _r2_client().upload_file(str(video_file), R2_BUCKET, r2_key)
@@ -126,6 +132,7 @@ def _do_download(task_id: str, url: str, job_id: str, quality: str = "720p", r2_
             "width": width,
             "height": height,
             "ext": "mp4",
+            "thumbnail": thumbnail,
         }
     except Exception as e:
         print(f"[dl_service] error: {e}", flush=True)
